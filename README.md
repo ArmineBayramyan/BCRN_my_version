@@ -13,3 +13,18 @@ Train a ×2 super-resolution model:
 
 ```bash
 python final_train.py
+```
+
+## Testing / Evaluation
+Run evaluation on a test dataset:
+
+```bash
+python BCRN_test.py
+```
+
+## TensorBoard
+Logs are saved under runs/.
+
+```bash
+tensorboard --logdir runs
+```
