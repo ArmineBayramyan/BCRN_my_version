@@ -1,0 +1,28 @@
+# datasets (do NOT upload)
+datasets/
+BCRN/datasets/
+BCRN/datasets/**
+**/datasets/**
+**/npy/**
+**/*.npy
+
+# checkpoints / runs / results
+checkpoint_*/
+final_checkpoint_*/
+checkpoint_x*_old/
+checkpoint_x*_with_results/
+runs/
+results/
+*.pth
+*.pt
+events.out.tfevents.*
+
+# python / venv
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
