@@ -26,3 +26,9 @@ __pycache__/
 # IDE
 .idea/
 .vscode/
+
+# initial training
+train_BCRN copy.py
+train_BCRN.py
+**/train_BCRN copy.py
+**/train_BCRN.py
