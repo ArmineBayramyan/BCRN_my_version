@@ -13,5 +13,3 @@ Train a ×2 super-resolution model:
 
 ```bash
 python final_train.py
-
----
