@@ -1,3 +1,12 @@
+# BCRN – Modified Training & Evaluation Pipeline
+
+This repository contains a **personal modified implementation of BCRN**.
+
+This codebase is intended for **research, experimentation, and coursework**.
+
+
+---
+
 # Clone the repository
 
 ```bash
@@ -21,15 +30,6 @@ python -m venv venv
 ```bash
 pip install torch torchvision numpy opencv-python scikit-image tensorboard tqdm
 ```
-
----
-
-# BCRN – Modified Training & Evaluation Pipeline
-
-This repository contains a **personal modified implementation of BCRN**.
-
-This codebase is intended for **research, experimentation, and coursework**.
-
 
 ---
 
