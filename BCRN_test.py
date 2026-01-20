@@ -14,8 +14,8 @@ parser.add_argument("--test_hr_folder", type=str, default=r"C:\Users\Admin\Pycha
                     help='the folder of the target images')
 parser.add_argument("--test_lr_folder", type=str, default=r"C:\Users\Admin\PycharmProjects\BCRN\BCRN\datasets\test\Urban 100\X2 Urban100\X2\LOW X2 Urban",
                     help='the folder of the input images')
-parser.add_argument("--output_folder", type=str, default='results/final_best_from_100/Urban100/x2')
-parser.add_argument("--checkpoint", type=str, default=r"C:\Users\Admin\PycharmProjects\BCRN\BCRN\final_checkpoint_x2\best.pth",
+parser.add_argument("--output_folder", type=str, default='results/final_best_from_200_new/Urban100/x2')
+parser.add_argument("--checkpoint", type=str, default=r"C:\Users\Admin\PycharmProjects\BCRN\BCRN\final_checkpoint_x2_new\best.pth",
                     help='checkpoint folder to use')
 parser.add_argument('--cuda', action='store_true', default=True,
                     help='use cuda')
@@ -96,7 +96,10 @@ for imname in filelist:
         torch.cuda.synchronize()
         time_list[i] = start.elapsed_time(end)  # milliseconds
 
-    out_img = utils.tensor2np(out.detach()[0])
+    # out_img = utils.tensor2np(out.detach()[0])
+    out = out.clamp(0, 1)
+    out_img = (out[0].permute(1,2,0).cpu().numpy() * 255.0).round().astype(np.uint8)  # RGB uint8
+
     crop_size = opt.upscale_factor
     cropped_sr_img = utils.shave(out_img, crop_size)
     cropped_gt_img = utils.shave(im_gt, crop_size)

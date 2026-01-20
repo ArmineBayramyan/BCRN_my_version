@@ -32,3 +32,5 @@ train_BCRN copy.py
 train_BCRN.py
 **/train_BCRN copy.py
 **/train_BCRN.py
+
+check.py

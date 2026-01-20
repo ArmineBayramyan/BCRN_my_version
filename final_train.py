@@ -1,6 +1,7 @@
 import argparse
 import os
 import random
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -12,11 +13,13 @@ from dataset_utils import DIV2K, Set5_val
 import utils
 from model.model import BluePrintConvNeXt_SR
 
+
 # ----------------------------- Utils -----------------------------
 def set_seed(seed: int):
     random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
 
 def save_checkpoint(
     ckpt_dir: str,
@@ -29,7 +32,6 @@ def save_checkpoint(
 ):
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    # full training state
     state = {
         "epoch": epoch,
         "model": model.state_dict(),
@@ -71,6 +73,7 @@ def try_resume(resume_path: str, device: torch.device, model, optimizer, schedul
     print(f"===> Loaded model weights only (old checkpoint format): {resume_path}")
     return 1, -float("inf")
 
+
 # ----------------------------- Train / Valid -----------------------------
 def train_one_epoch(
     epoch: int,
@@ -80,14 +83,16 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     writer: SummaryWriter,
-    epoch_start_global_step: int,
+    global_step: int,
     grad_clip: float = 1.0,
 ):
     model.train()
     running_loss = 0.0
-
     num_batches = len(loader)
-    global_step = epoch_start_global_step
+
+    if num_batches == 0:
+        print("ERROR: training_loader has 0 batches. Dataset path / loading is wrong.")
+        return float("nan"), global_step
 
     for it, (lr_tensor, hr_tensor) in enumerate(loader, 1):
         lr_tensor = lr_tensor.to(device, non_blocking=True)
@@ -98,12 +103,9 @@ def train_one_epoch(
         sr_tensor = model(lr_tensor)
         loss = criterion(sr_tensor, hr_tensor)
 
-        # NaN/Inf guard
         if torch.isnan(loss) or torch.isinf(loss):
-            print(f"[NaN/Inf] epoch {epoch} iter {it}: loss is invalid. Skipping remaining steps of this epoch.")
-            # return float("nan")
+            print(f"[NaN/Inf] epoch {epoch} iter {it}: loss invalid. Stopping this epoch.")
             return float("nan"), global_step
-
 
         loss.backward()
 
@@ -113,16 +115,20 @@ def train_one_epoch(
         optimizer.step()
 
         running_loss += loss.item()
-
         global_step += 1
-        # global_step = (epoch - 1) * num_batches + it
+
         writer.add_scalar("Loss/train", loss.item(), global_step)
 
         if it % 100 == 0:
             print(f"===> Epoch[{epoch}]({it}/{num_batches}) Loss_L1: {loss.item():.6f}")
 
+        # flush sometimes so TB updates live
+        if it % 200 == 0:
+            writer.flush()
+
     avg_loss = running_loss / max(num_batches, 1)
     return avg_loss, global_step
+
 
 @torch.no_grad()
 def validate(
@@ -134,7 +140,7 @@ def validate(
     writer: SummaryWriter,
     scale: int,
     eval_on_y: bool,
-    global_step_for_epoch: int,
+    global_step: int,
 ):
     model.eval()
 
@@ -143,9 +149,11 @@ def validate(
     total_ssim = 0.0
     n = 0
 
-    # for batch in loader:
+    if len(loader) == 0:
+        print("ERROR: testing_loader has 0 batches.")
+        return float("nan"), float("nan"), float("nan")
+
     for lr_tensor, hr_tensor in loader:
-        # lr_tensor, hr_tensor = batch[0], batch[1]
         lr_tensor = lr_tensor.to(device, non_blocking=True)
         hr_tensor = hr_tensor.to(device, non_blocking=True)
 
@@ -155,7 +163,6 @@ def validate(
         sr_img = utils.tensor2np(pre.detach()[0])
         gt_img = utils.tensor2np(hr_tensor.detach()[0])
 
-        # shave border by scale
         cropped_sr_img = utils.shave(sr_img, scale)
         cropped_gt_img = utils.shave(gt_img, scale)
 
@@ -180,51 +187,47 @@ def validate(
 
     print(f"===> Valid Epoch[{epoch}]  L1: {val_loss:.6f} | PSNR: {val_psnr:.4f} | SSIM: {val_ssim:.4f}")
 
-    writer.add_scalar("Loss/val", val_loss, global_step_for_epoch)
-    writer.add_scalar("PSNR/val", val_psnr, global_step_for_epoch)
-    writer.add_scalar("SSIM/val", val_ssim, global_step_for_epoch)
+    # Use SAME global_step axis as training (so plots align naturally)
+    writer.add_scalar("Loss/val", val_loss, global_step)
+    writer.add_scalar("PSNR/val", val_psnr, global_step)
+    writer.add_scalar("SSIM/val", val_ssim, global_step)
 
+    writer.flush()
     return val_loss, val_psnr, val_ssim
+
 
 # ----------------------------- Main -----------------------------
 def main():
     os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     torch.backends.cudnn.benchmark = True
-    torch.autograd.set_detect_anomaly(True)
 
     BASE_ROOT = r"C:\Users\Admin\PycharmProjects\BCRN\BCRN\datasets\npy"
 
     parser = argparse.ArgumentParser(description="BCRN / MSR Training")
 
-    # data / loader
-    parser.add_argument("--root", type=str, default=BASE_ROOT, help="root directory of NPY datasets")
-    parser.add_argument("--threads", type=int, default=4, help="num_workers (Windows: 0-4 is safer)")
+    parser.add_argument("--root", type=str, default=BASE_ROOT)
+    parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--testBatchSize", type=int, default=1)
 
-    # training
     parser.add_argument("--nEpochs", type=int, default=300)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--step_size", type=int, default=200)
     parser.add_argument("--gamma", type=float, default=0.5)
     parser.add_argument("--grad_clip", type=float, default=1.0)
 
-    # SR settings
     parser.add_argument("--scale", type=int, default=2, choices=[2, 4, 8])
-    parser.add_argument("--patch_size", type=int, default=48,
-                        help="LR patch size; HR patch becomes patch_size*scale (if dataset uses it)")
+    parser.add_argument("--patch_size", type=int, default=48)
 
-    # misc
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--isY", action="store_true", default=True, help="evaluate on Y channel")
-    parser.add_argument("--cuda", action="store_true", help="enable CUDA (GPU)")  
-    parser.add_argument("--pretrained", type=str, default="", help="optional: load ONLY model weights (state_dict)")
+    parser.add_argument("--isY", action="store_true", default=True)
+    parser.add_argument("--cuda", action="store_true")
+    parser.add_argument("--pretrained", type=str, default="")
 
-    # checkpoints / resume
-    parser.add_argument("--ckpt_dir", type=str, default="", help="checkpoint output dir (default: checkpoint_x{scale})")
-    parser.add_argument("--resume_path", type=str, default="", help="resume from a full-state checkpoint (.pth)")
+    parser.add_argument("--ckpt_dir", type=str, default="")
+    parser.add_argument("--resume_path", type=str, default="")
 
-    # compatibility args 
+    # compatibility args
     parser.add_argument("--n_train", type=int, default=3450)
     parser.add_argument("--n_val", type=int, default=1)
     parser.add_argument("--test_every", type=int, default=1000)
@@ -233,30 +236,33 @@ def main():
     parser.add_argument("--ext", type=str, default=".npy")
     parser.add_argument("--phase", type=str, default="train")
 
-    # TensorBoard run name (so every run is separate if you want)
-    parser.add_argument("--run_name", type=str, default="", help="optional tensorboard run subfolder name")
-
+    parser.add_argument("--run_name", type=str, default="")
     args = parser.parse_args()
     print(args)
 
-    # device
     use_cuda = args.cuda and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     print("Device:", device)
 
-    # seed
     set_seed(args.seed)
 
-    # TensorBoard
-    run_name = args.run_name.strip() or f"final_BCRN_x{args.scale}"
-    # log_dir = os.path.join("runs", f"final_BCRN_x{args.scale}")
+    # -------- TensorBoard: unique run folder (prevents confusion) --------
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base_name = args.run_name.strip() or f"final_BCRN_x{args.scale}"
+    run_name = f"{base_name}_{ts}"
     log_dir = os.path.join("runs", run_name)
     os.makedirs(log_dir, exist_ok=True)
-    writer = SummaryWriter(log_dir=log_dir)
-    # print("TensorBoard log dir:", log_dir)
-    print("TensorBoard log dir:", os.path.abspath(log_dir))
 
-    # datasets
+    writer = SummaryWriter(log_dir=log_dir, flush_secs=10)
+    # force event file creation immediately:
+    writer.add_text("run/info", f"run_name={run_name}", 0)
+    writer.flush()
+
+    print("TensorBoard log dir:", os.path.abspath(log_dir))
+    print("Run TensorBoard with:")
+    print(f'  tensorboard --logdir "{os.path.abspath("runs")}"')
+
+    # -------- datasets --------
     print("===> Loading datasets")
     args.is_train = True
     trainset = DIV2K.div2k(args)
@@ -265,6 +271,7 @@ def main():
         f"Test_Datasets/Set5_LR/x{args.scale}/",
         args.scale,
     )
+
     print("Trainset length:", len(trainset), "| Testset length:", len(testset))
 
     training_loader = DataLoader(
@@ -283,12 +290,13 @@ def main():
         pin_memory=use_cuda,
     )
 
-    # model / loss
-    print("===> Building model")
+    print("training_loader batches:", len(training_loader))
+    print("testing_loader batches:", len(testing_loader))
+
+    # -------- model/loss --------
     model = BluePrintConvNeXt_SR(upscale_factor=args.scale).to(device)
     criterion = nn.L1Loss().to(device)
 
-    # optimizer + scheduler
     optimizer = torch.optim.Adam(
         model.parameters(),
         lr=args.lr,
@@ -298,33 +306,30 @@ def main():
     )
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
 
-    if args.pretrained:
-        if os.path.exists(args.pretrained):
-            sd = torch.load(args.pretrained, map_location=device)
-            if isinstance(sd, dict) and "model" in sd:
-                model.load_state_dict(sd["model"])
-            else:
-                model.load_state_dict(sd)
-            print("===> Loaded pretrained weights from:", args.pretrained)
+    # optional pretrained weights
+    if args.pretrained and os.path.exists(args.pretrained):
+        sd = torch.load(args.pretrained, map_location=device, weights_only=False)
+        if isinstance(sd, dict) and "model" in sd:
+            model.load_state_dict(sd["model"])
         else:
-            print("WARNING: pretrained path does not exist:", args.pretrained)
+            model.load_state_dict(sd)
+        print("===> Loaded pretrained weights from:", args.pretrained)
 
-    # resume 
+    # resume
     start_epoch, best_psnr = try_resume(args.resume_path, device, model, optimizer, scheduler)
 
-    # checkpoints directory
-    ckpt_dir = args.ckpt_dir.strip() or f"final_checkpoint_x{args.scale}"
+    ckpt_dir = args.ckpt_dir.strip() or f"final_checkpoint_x{args.scale}_new"
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    global_step = (start_epoch - 1) * len(training_loader)
+    global_step = (start_epoch - 1) * max(len(training_loader), 1)
 
     # training loop
     print("===> Training")
     for epoch in range(start_epoch, args.nEpochs + 1):
-        # log LR
         current_lr = optimizer.param_groups[0]["lr"]
         writer.add_scalar("LR", current_lr, global_step)
-        print(f"\nEpoch {epoch}/{args.nEpochs} | LR={current_lr:.6e}")
+
+        print(f"\nEpoch {epoch}/{args.nEpochs} | LR={current_lr:.6e} | global_step={global_step}")
 
         train_loss, global_step = train_one_epoch(
             epoch=epoch,
@@ -334,7 +339,7 @@ def main():
             optimizer=optimizer,
             device=device,
             writer=writer,
-            epoch_start_global_step=global_step,
+            global_step=global_step,
             grad_clip=args.grad_clip,
         )
 
@@ -347,10 +352,9 @@ def main():
             writer=writer,
             scale=args.scale,
             eval_on_y=args.isY,
-            global_step_for_epoch=global_step,
+            global_step=global_step,
         )
 
-        # step scheduler 
         scheduler.step()
 
         is_best = val_psnr > best_psnr
@@ -367,10 +371,9 @@ def main():
             is_best=is_best,
         )
 
-        writer.flush()
-
     writer.close()
     print("Done.")
+
 
 if __name__ == "__main__":
     main()
